@@ -3,9 +3,7 @@ import warnings, json
 from multiprocessing.pool import ThreadPool
 import multiprocessing as mp
 from typing import ClassVar, Optional, cast
-import uuid
 from dbignite.fhir_mapping_model import FhirSchemaModel
-from .fhir_mapping_model import FhirSchemaModel
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import *
 from pyspark.sql.types import ArrayType, StringType, StructType
@@ -55,12 +53,22 @@ class FhirResource(ABC):
     # @return - new DBIgnite FHIR resource representation
     #
     @staticmethod
-    def from_raw_bundle_resource(data: DataFrame) -> "FhirResource":
+    def from_raw_bundle_resource(data: DataFrame, streaming: bool = False) -> "FhirResource":
         resources_df = data.select(col("resource"), get_json_object("resource", "$.resourceType").alias("resourceType"))
-        
-        if resources_df.filter("upper(resourceType) != 'BUNDLE'").count() > 0:
-            warnings.warn("Found " + resources_df.filter("upper(resourceType) != 'BUNDLE'").count() + " rows of non-Bundle resource types. Only proceeding reading Fhir bundle types")
-        return BundleFhirResource(resources_df.filter("upper(resourceType) == 'BUNDLE'"))
+        if not streaming:
+            non_bundle = resources_df.filter("upper(resourceType) != 'BUNDLE'")
+            skipped = non_bundle.count()
+            if skipped > 0:
+                warnings.warn(
+                    f"Found {skipped} row(s) with resourceType other than Bundle; "
+                    "only Bundle rows are read. Other rows are skipped.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            resources_df = resources_df.filter("upper(resourceType) == 'BUNDLE'")
+        else:
+            resources_df = resources_df.filter("upper(resourceType) == 'BUNDLE'")
+        return BundleFhirResource(resources_df, streaming=streaming)
 
 #
 # Core representation of FHIR bundles
@@ -73,17 +81,20 @@ class BundleFhirResource(FhirResource):
     # @param - raw_data is a dataframe containing raw text resources
     # @param - parser = the function to use to build the _entry representation of resources
     #
-    def __init__(self, raw_data, parser = None) -> None:
+    def __init__(self, raw_data, parser = None, streaming: bool = False) -> None:
         self._raw_data = raw_data
         self._entry = None
         self._parser = getattr(self, parser) if parser is not None else self.read_bundle_data
-                                  
+        self._streaming = streaming
+
     #
     # Main entry to the FHIR resources in a bundle
     #
     def entry(self, schemas = FhirSchemaModel()) -> DataFrame:
+        if self._streaming:
+            return self._parser(schemas=schemas)
         if self._entry is None:
-            self._entry = self._parser(schemas = schemas)
+            self._entry = self._parser(schemas=schemas)
         return self._entry
 
     #
@@ -104,29 +115,61 @@ class BundleFhirResource(FhirResource):
 
 
     #
-    # reading ndjson data
+    # reading ndjson data (DataFrame-only; supports streaming and bulk correlation column)
     #
     def read_ndjson_data(self, schemas):
-        return (
-         self._raw_data.rdd
-            .map(lambda x: [json.dumps(json.loads(y)) for y in x.asDict().get("resource").split("\n") if len(y) > 0])
-            .map(lambda x: [x])
-            .toDF(["resources"])
-            .select(BundleFhirResource.list_entry_columns(schemas, parent_column=col("resources"))
-                    + [lit("").alias("id"), lit("").alias("timestamp")])
-         ).withColumn("bundleUUID", expr("uuid()"))
+        df = self._raw_data
+        df = df.withColumn(
+            "_resources",
+            expr("transform(filter(split(resource, '\\n'), x -> trim(x) != ''), x -> trim(x))"),
+        )
+        corr = (
+            col("bulkExportCorrelationId")
+            if "bulkExportCorrelationId" in df.columns
+            else lit(None).cast("string")
+        )
+        bundle_uuid = sha2(
+            concat_ws(
+                lit("|"),
+                coalesce(corr, lit("")),
+                coalesce(input_file_name(), lit("")),
+                lit("ndjson"),
+            ),
+            256,
+        )
+        df = df.withColumn("bundleUUID", bundle_uuid)
+        sel = (
+            BundleFhirResource.list_entry_columns(schemas, parent_column=col("_resources"))
+            + [lit("").alias("id"), lit("").alias("timestamp"), col("bundleUUID")]
+        )
+        if "bulkExportCorrelationId" in df.columns:
+            sel.append(col("bulkExportCorrelationId"))
+        return df.select(sel)
 
     #
     # Read and parse all data in raw_data dataframe
     #  @returns new dataframe with entry.x where x is an array of each resource provided
     #
     def read_bundle_data(self, schemas = FhirSchemaModel()) -> DataFrame:
-        return (self._raw_data
-                .select(from_json("resource", BundleFhirResource.BUNDLE_SCHEMA).alias("bundle")) #root level schema
-                .select(BundleFhirResource.list_entry_columns(schemas )#entry[] into indvl cols
-                    + [col("bundle.timestamp"), col("bundle.id")] #root cols timestamp & id 
-                ).withColumn("bundleUUID", expr("uuid()")) 
+        parsed = self._raw_data.select(
+            from_json("resource", BundleFhirResource.BUNDLE_SCHEMA).alias("bundle"),
+            col("resource").alias("_raw_resource"),
+        )
+        bundle_uuid = sha2(
+            coalesce(
+                nullif(trim(col("bundle.id")), lit("")),
+                sha2(col("_raw_resource"), 256),
+            ),
+            256,
+        )
+        return (
+            parsed.select(
+                BundleFhirResource.list_entry_columns(schemas)
+                + [col("bundle.timestamp"), col("bundle.id"), col("_raw_resource")]
             )
+            .withColumn("bundleUUID", bundle_uuid)
+            .drop("_raw_resource")
+        )
     
     #
     # @param schemas - resources to parse out into separate columns with their associated spark schemas
@@ -191,14 +234,19 @@ class BundleFhirResource(FhirResource):
     #  @return None
     #
     def bulk_table_write(self, location = "",  write_mode = "append", columns = None):
-        pool = ThreadPool(mp.cpu_count()-1)
-        list(pool.map(lambda column: self.table_write(str(column), location, write_mode), ([c for c in self.entry().columns if c not in ["id", "timestamp", "bundleUUID"]] if columns is None else columns)))
+        pool = ThreadPool(max(1, mp.cpu_count() - 1))
+        skip = {"id", "timestamp", "bundleUUID", "bulkExportCorrelationId"}
+        list(pool.map(lambda column: self.table_write(str(column), location, write_mode), ([c for c in self.entry().columns if c not in skip] if columns is None else columns)))
 
     #
     # Write an individual FHIR resource as a table
     #
     def table_write(self, column, location = "", write_mode = "append"):
-        self.entry().select(col("bundleUUID"), col("timestamp"),col("id"),column).write.mode(write_mode).saveAsTable( (location + "." + column).lstrip("."))
+        e = self.entry()
+        sel = [col("bundleUUID"), col("timestamp"), col("id"), column]
+        if "bulkExportCorrelationId" in e.columns:
+            sel.insert(1, col("bulkExportCorrelationId"))
+        e.select(*sel).write.mode(write_mode).saveAsTable((location + "." + column).lstrip("."))
 
     #
     # Returns a string representing ndjson for each grouping/bundle of FHIR resources

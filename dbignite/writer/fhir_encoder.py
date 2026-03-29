@@ -13,8 +13,6 @@ class MappingManager():
     def __init__(self, mappings, src_schema, em = None):
         self.mappings = mappings
         self.src_schema = src_schema
-        if len([x.fhir_resource() for x in self.mappings]) > 1:
-            Exception("Support for only 1 FHIR resource within a mapping at a time")
         self.em = em if em is not None else FhirEncoderManager()
         
     #

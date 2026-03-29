@@ -1,0 +1,12 @@
+{
+  "transactionTime": "2020-01-15T00:00:00.000Z",
+  "request": "https://example.org/fhir/$export",
+  "requiresAccessToken": false,
+  "output": [
+    {
+      "type": "Patient",
+      "url": "../ndjson_records/inline_records.json"
+    }
+  ],
+  "error": []
+}
