@@ -38,20 +38,25 @@ create a transformer and transform from FHIR to OMOP CDM:
 FhirBundlesToCdm().transform(fhir_model, cdm_model, True)
 ```
 
-The returned value of the `cdm` is an OmopCDM object with an associated database (`dbignite_demo`), containing the following tables:
+Optionally pass a Hive/Delta schema for vocab mapping metadata (stub `source_to_concept_map` is created there when non-empty):
 
-- condition
-- encounter
-- person
-- procedure_occurrence
+```
+cdm_model = OmopCdm("dbignite_demo", mapping_database="dbignite_demo_vocab")
+```
 
-Which are automaically created and added to the specified schema (`'dbignite_demo'` in the example above).
-As a usecase, one can simply construct cohorts based on these tables and add the cohorts to the same schema or a new schema:
-For example to select all male patients born before 1982:
+The returned `OmopCdm` object is bound to `dbignite_demo` with these OMOP CDM–named tables (subset of OHDSI OMOP 5.x):
 
-`select * from dbignite_demo.person where year_of_birth < 1982 and gender_source_value='male'` 
+- `condition_occurrence`
+- `visit_occurrence`
+- `person`
+- `procedure_occurrence`
+- `source_to_concept_map` (in `mapping_database` when that argument is set)
 
-> [See this in a notebook.](notebooks/dbignite-demo.py)
+Tables are created in the specified CDM schema. For cohorts, for example all male patients born before 1982:
+
+`select * from dbignite_demo.person where year_of_birth < 1982 and gender_source_value = 'male'`
+
+> [See this in a notebook.](../../notebooks/dbignite-demo.py)
 
 # Interop Pipeline Design
 

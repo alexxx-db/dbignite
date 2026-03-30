@@ -1,4 +1,13 @@
-from pyspark.sql.types import *
+from pyspark.sql.types import (
+    ArrayType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+    DateType,
+    IntegerType,
+)
 
 ENTRY_SCHEMA = StructType(
     [
@@ -7,7 +16,6 @@ ENTRY_SCHEMA = StructType(
             StructType(
                 [
                     StructField("id", StringType()),
-                    # Not named in the spec.
                     StructField("resourceType", StringType()),
                 ]
             ),
@@ -16,8 +24,7 @@ ENTRY_SCHEMA = StructType(
             "request",
             StructType(
                 [
-                    # Not technically required, but named in spec.
-                    StructField("url", StringType())
+                    StructField("url", StringType()),
                 ]
             ),
         ),
@@ -31,31 +38,46 @@ JSON_ENTRY_SCHEMA = StructType(
 PERSON_SCHEMA = StructType(
     [
         StructField("person_id", StringType()),
-        StructField("name", StringType()),
+        StructField("person_name_source_value", StringType()),
         StructField("gender_source_value", StringType()),
         StructField("year_of_birth", IntegerType()),
         StructField("month_of_birth", IntegerType()),
         StructField("day_of_birth", IntegerType()),
-        StructField("address", StringType()),
+        StructField("birth_datetime", TimestampType()),
+        StructField("person_source_value", StringType()),
+        StructField("gender_concept_id", LongType()),
+        StructField("race_concept_id", LongType()),
+        StructField("ethnicity_concept_id", LongType()),
+        StructField("location_id", LongType()),
+        StructField("address_source_value", StringType()),
     ]
 )
 
-CONDITION_SCHEMA = StructType(
+CONDITION_OCCURRENCE_SCHEMA = StructType(
     [
         StructField("condition_occurrence_id", StringType()),
         StructField("person_id", StringType()),
         StructField("visit_occurrence_id", StringType()),
         StructField("condition_start_datetime", TimestampType()),
         StructField("condition_end_datetime", TimestampType()),
-        StructField("condition_status", StringType()),
-        StructField("condition_code", StringType()),
+        StructField("condition_concept_id", LongType()),
+        StructField("condition_type_concept_id", LongType()),
+        StructField("condition_status_concept_id", LongType()),
+        StructField("condition_source_value", StringType()),
+        StructField("condition_source_concept_id", LongType()),
+        StructField("condition_status_source_value", StringType()),
     ]
 )
+
+# Deprecated name for tests referencing the old constant
+CONDITION_SCHEMA = CONDITION_OCCURRENCE_SCHEMA
 
 PROCEDURE_OCCURRENCE_SCHEMA = StructType(
     [
         StructField("procedure_occurrence_id", StringType()),
         StructField("person_id", StringType()),
+        StructField("procedure_concept_id", LongType()),
+        StructField("procedure_type_concept_id", LongType()),
         StructField("procedure_code", StringType()),
         StructField("procedure_code_display", StringType()),
         StructField("procedure_code_system", StringType()),
@@ -118,14 +140,17 @@ LOCATION_SCHEMA = StructType(
     ]
 )
 
-ENCOUNTER_SCHEMA = StructType(
+VISIT_OCCURRENCE_SCHEMA = StructType(
     [
-        StructField("encounter_id", StringType()),
+        StructField("visit_occurrence_id", StringType()),
         StructField("person_id", StringType()),
-        StructField("encounter_period_start", TimestampType()),
-        StructField("encounter_period_end", TimestampType()),
-        StructField("serviceProvider", StringType()),
-        StructField("encounter_status", StringType()),
+        StructField("visit_concept_id", LongType()),
+        StructField("visit_type_concept_id", LongType()),
+        StructField("visit_start_datetime", TimestampType()),
+        StructField("visit_end_datetime", TimestampType()),
+        StructField("visit_source_value", StringType()),
+        StructField("service_provider_source_value", StringType()),
+        StructField("encounter_status_display", StringType()),
         StructField("encounter_code", StringType()),
         StructField("encounter_status_text", StringType()),
         StructField("participant", ArrayType(PARTICIPANT_SCHEMA)),
@@ -134,6 +159,9 @@ ENCOUNTER_SCHEMA = StructType(
         StructField("location", ArrayType(LOCATION_SCHEMA)),
     ]
 )
+
+# Deprecated alias
+ENCOUNTER_SCHEMA = VISIT_OCCURRENCE_SCHEMA
 
 CODING_SCHEMA = StructType(
     [
@@ -144,5 +172,14 @@ CODING_SCHEMA = StructType(
 )
 
 CONDITION_SUMMARY_SCHEMA = StructType(
-    [StructField("conditions", ArrayType(CONDITION_SCHEMA, "false"))]
+    [StructField("conditions", ArrayType(CONDITION_OCCURRENCE_SCHEMA, True))]
+)
+
+SOURCE_TO_CONCEPT_MAP_SCHEMA = StructType(
+    [
+        StructField("source_code", StringType()),
+        StructField("source_vocabulary_id", StringType()),
+        StructField("source_concept_id", LongType()),
+        StructField("target_concept_id", LongType()),
+    ]
 )

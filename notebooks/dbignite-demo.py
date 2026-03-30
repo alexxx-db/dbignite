@@ -78,7 +78,7 @@ print(dbutils.fs.head(sample_bundle,500))
 
 # MAGIC %md
 # MAGIC ## 2. Extract resources from the bundles
-# MAGIC The`fhir_bundles_to_omop_cdm` method extracts resources from the FHIR bunldes and creates: `person`, `condition`, `procedure_occurrence` and `encounters` in the `cdm_database`
+# MAGIC The `fhir_bundles_to_omop_cdm` method extracts resources from the FHIR bundles and creates OMOP-aligned tables: `person`, `condition_occurrence`, `procedure_occurrence`, and `visit_occurrence` in the `cdm_database`.
 
 # COMMAND ----------
 
@@ -112,7 +112,12 @@ display(
    person_dashboard_df
   .filter("person_id='6efa4cd6-923d-2b91-272a-0f5c78a637b8'")
   .select(F.explode('conditions').alias('conditions'))
-  .selectExpr('conditions.condition_start_datetime','conditions.condition_start_datetime','conditions.condition_status')
+  .selectExpr(
+    'conditions.condition_start_datetime',
+    'conditions.condition_end_datetime',
+    'conditions.condition_source_value',
+    'conditions.condition_status_source_value',
+  )
 )
 
 # COMMAND ----------
@@ -146,19 +151,19 @@ display(sql('show tables'))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Condition Table
+# MAGIC ### condition_occurrence Table
 
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select count(*) from condition 
+# MAGIC select count(*) from condition_occurrence
 
 # COMMAND ----------
 
 # DBTITLE 1,Top 20 common conditions
 # MAGIC %sql
-# MAGIC select condition_code, condition_status, count(*) as counts
-# MAGIC from condition
+# MAGIC select condition_source_value, condition_status_source_value, count(*) as counts
+# MAGIC from condition_occurrence
 # MAGIC group by 1,2
 # MAGIC order by 3 desc
 # MAGIC limit 20
@@ -168,8 +173,8 @@ display(sql('show tables'))
 # DBTITLE 1,age distribution among covid-19 patients
 # MAGIC %sql
 # MAGIC select 10*floor((year(CURRENT_DATE) - year_of_birth)/10) as age_group, count(*) as count from person p
-# MAGIC join condition c on p.person_id=c.person_id
-# MAGIC where c.condition_code=840539006
+# MAGIC join condition_occurrence c on p.person_id=c.person_id
+# MAGIC where c.condition_source_value='840539006'
 # MAGIC group by 1
 # MAGIC order by 1
 
@@ -196,21 +201,21 @@ display(sql('show tables'))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Encounter Table
+# MAGIC ### visit_occurrence Table
 
 # COMMAND ----------
 
-# DBTITLE 1,Encounters
+# DBTITLE 1,Visits (FHIR Encounter → visit_occurrence)
 # MAGIC %sql
-# MAGIC select * from encounter
+# MAGIC select * from visit_occurrence
 # MAGIC limit 10
 
 # COMMAND ----------
 
-# DBTITLE 1,top 10 encounters
+# DBTITLE 1,top 10 visits by class display
 # MAGIC %sql
-# MAGIC select encounter_status, count(*) as count
-# MAGIC from encounter
+# MAGIC select encounter_status_display, count(*) as count
+# MAGIC from visit_occurrence
 # MAGIC group by 1
 # MAGIC order by 2 desc
 # MAGIC limit 10

@@ -1,23 +1,31 @@
-import json
 import logging
-
-
 from abc import ABC, abstractmethod
-from typing import Iterable
+from typing import Iterable, Optional, Tuple, Union
 
 from pyspark.sql import DataFrame
 from pyspark.sql.catalog import Database
+from pyspark.sql.functions import explode, from_json, udf
 
-from dbignite.omop.utils import *
-from dbignite.omop.schemas import ENTRY_SCHEMA
+from dbignite.omop.constants import (
+    CONDITION_OCCURRENCE_TABLE,
+    PERSON_TABLE,
+    PROCEDURE_OCCURRENCE_TABLE,
+    SOURCE_TO_CONCEPT_MAP_TABLE,
+    VISIT_OCCURRENCE_TABLE,
+)
+from dbignite.omop.schemas import ENTRY_SCHEMA, SOURCE_TO_CONCEPT_MAP_SCHEMA
+from dbignite.omop.utils import (
+    entries_to_condition,
+    entries_to_person,
+    entries_to_procedure_occurrence,
+    entries_to_visit_occurrence,
+    summarize_condition,
+    summarize_encounter,
+    summarize_procedure_occurrence,
+)
+from pyspark.sql.types import ArrayType, StringType as ST
 
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
-
-PERSON_TABLE = "person"
-CONDITION_TABLE = "condition"
-PROCEDURE_OCCURRENCE_TABLE = "procedure_occurrence"
-ENCOUNTER_TABLE = "encounter"
+import json
 
 
 class DataModel(ABC):
@@ -26,88 +34,74 @@ class DataModel(ABC):
         ...
 
     @abstractmethod
-    def listDatabases(self) -> Iterable[Database]:
+    def listDatabases(self) -> Iterable[Union[Database, str, None]]:
         ...
-    
+
     @abstractmethod
     def update(self) -> None:
         ...
 
-class FhirBundles():
-    #
-    # Only supporting path representations currently
-    #
-    def __init__(self, defaultResource = None, **args):
+
+class FhirBundles:
+    """Load FHIR Bundle JSON (whole file per row) and explode to bundle entries."""
+
+    def __init__(self, defaultResource=None, **args):
         from pyspark.sql import SparkSession
+
         self.spark = SparkSession.getActiveSession()
-        self.df = None #force lazy evaluation
+        self.df = None
         if defaultResource is None:
             self.defaultResource = self.asWholeTextfile
         else:
             self.defaultResource = defaultResource
         self.args = args
 
-    #
-    # Return json bundles as a DF 
-    #
     def loadEntries(self):
         if self.df is None:
             self.df = self.defaultResource(**self.args)
         return self.df
 
-    #
-    # ... 
-    #
     @staticmethod
-    @udf(ArrayType(StringType()))  ## TODO change to pandas_udf
+    @udf(ArrayType(ST()))
     def _entry_json_strings(value):
-        """
-        UDF takes raw text, returns the
-        parsed struct and raw JSON.
-        """
         bundle_json = json.loads(value)
         return [json.dumps(e) for e in bundle_json["entry"]]
 
-
-    #
-    # Read a fhir bundle reasource as a whole text file (1 resource per file)
-    # @param path of the json bundles
     def asWholeTextfile(self, path):
         return (
             self.spark.read.text(path, wholetext=True)
-              .select(explode(FhirBundles._entry_json_strings("value")).alias("entry_json"))
-              .withColumn("entry", from_json("entry_json", schema=ENTRY_SCHEMA))
+            .select(explode(FhirBundles._entry_json_strings("value")).alias("entry_json"))
+            .withColumn("entry", from_json("entry_json", schema=ENTRY_SCHEMA))
         ).cache()
 
-    #
-    # Read a fhir bundle resource as an inline json value (1 resource per line)
-    # 
     def asInlineJson(self, path):
-        raise NotImplementedError("TODO...")
+        raise NotImplementedError("asInlineJson is not implemented.")
 
-    #
-    # Read a fhir bundle resource as an inline json value (1 resource per line, static 1 entry per bundle)
-    # 
     def asInlineJsonSingleton(self, path):
         return (
-            self.spark.read.json(self.spark.read.json(path).rdd.map(lambda x: json.dumps({"entry_json": json.dumps(x.asDict())})))
-              .withColumn("entry", from_json("entry_json", schema=ENTRY_SCHEMA))
+            self.spark.read.json(
+                self.spark.read.json(path).rdd.map(
+                    lambda x: json.dumps({"entry_json": json.dumps(x.asDict())})
+                )
+            )
+            .withColumn("entry", from_json("entry_json", schema=ENTRY_SCHEMA))
         ).cache()
 
     def asStream(self, kwargs):
-        raise NotImplementedError("TODO...")
+        raise NotImplementedError("asStream is not implemented.")
 
-    def listDatabases():
-        raise NotImplementedError()
+    def summary(self) -> DataFrame:
+        return self.loadEntries()
 
-    def summary():
-        raise NotImplementedError()
-    
-    def update(self,path:str) -> None:
-        self.path=path
+    def listDatabases(self):
+        raise NotImplementedError("FhirBundles is not bound to a Hive/Delta database.")
+
+    def update(self, path: str) -> None:
+        self.path = path
+
 
 class PersonDashboard(DataModel):
-    def __init__(self, df: DataFrame = None):
+    def __init__(self, df: Optional[DataFrame] = None):
         self.df = df
 
     def summary(self):
@@ -115,24 +109,26 @@ class PersonDashboard(DataModel):
 
     def listDatabases(self):
         raise NotImplementedError()
-    
-    def update(self,df:DataFrame) -> None:
-        self.df=df
-    
+
+    def update(self, df: DataFrame) -> None:
+        self.df = df
+
+
 class OmopCdm(DataModel):
-    def __init__(self, cdm_database: str, mapping_database: str = None):
+    def __init__(self, cdm_database: str, mapping_database: Optional[str] = None):
         self.cdm_database = cdm_database
         self.mapping_database = mapping_database
 
     def summary(self) -> DataFrame:
-        raise NotImplementedError()
+        raise NotImplementedError("Use Spark SQL or read tables from the CDM database.")
 
-    def listDatabases(self):
+    def listDatabases(self) -> Tuple[str, Optional[str]]:
         return (self.cdm_database, self.mapping_database)
-    
-    def update(self,cdm_database: str,mapping_database: str = None):
+
+    def update(self, cdm_database: str, mapping_database: Optional[str] = None) -> None:
         self.cdm_database = cdm_database
         self.mapping_database = mapping_database
+
 
 class Transformer(ABC):
     @abstractmethod
@@ -143,99 +139,109 @@ class Transformer(ABC):
     def transform(self) -> DataModel:
         ...
 
+
+def _ensure_mapping_stub(spark, mapping_database: str) -> None:
+    """Create an empty staging table for future source→standard concept mappings."""
+    spark.sql(f"CREATE DATABASE IF NOT EXISTS `{mapping_database}`")
+    empty = spark.createDataFrame([], SOURCE_TO_CONCEPT_MAP_SCHEMA)
+    empty.write.mode("overwrite").saveAsTable(
+        f"{mapping_database}.{SOURCE_TO_CONCEPT_MAP_TABLE}"
+    )
+
+
 class FhirBundlesToCdm(Transformer):
-    def __init__(self, spark = None):
+    def __init__(self, spark=None):
         from pyspark.sql import SparkSession
+
         self.spark = spark if spark is not None else SparkSession.getActiveSession()
-        
+
     def loadEntries(self):
         pass
 
     def transform(
-            self,
-            source: FhirBundles,
-            target: OmopCdm,
-            overwrite: bool = True,
+        self,
+        source: FhirBundles,
+        target: OmopCdm,
+        overwrite: bool = True,
     ) -> OmopCdm:
-
         cdm_database = target.cdm_database
-        mapping_database=target.mapping_database
+        mapping_database = target.mapping_database
 
         entries_df = source.loadEntries()
 
         person_df = entries_df.transform(entries_to_person)
         condition_df = entries_df.transform(entries_to_condition)
         procedure_occurrence_df = entries_df.transform(entries_to_procedure_occurrence)
-        encounter_df = entries_df.transform(entries_to_encounter)
+        visit_occurrence_df = entries_df.transform(entries_to_visit_occurrence)
 
-        self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {cdm_database}")
-        self.spark.sql(f"CREATE DATABASE IF NOT EXISTS {mapping_database}")
+        self.spark.sql(f"CREATE DATABASE IF NOT EXISTS `{cdm_database}`")
+        if mapping_database:
+            _ensure_mapping_stub(self.spark, mapping_database)
+
         self.spark.catalog.setCurrentDatabase(cdm_database)
 
-        logging.info(f"created {cdm_database} and {mapping_database} databases")
+        logging.info("Writing OMOP-aligned tables to database %s", cdm_database)
 
-        if overwrite:
-            person_df.write.mode("overwrite").saveAsTable(PERSON_TABLE)
-            condition_df.write.mode("overwrite").saveAsTable(
-                CONDITION_TABLE
-            )
-            procedure_occurrence_df.write.mode("overwrite").saveAsTable(
-                PROCEDURE_OCCURRENCE_TABLE
-            )
-            encounter_df.write.mode("overwrite").saveAsTable(
-                ENCOUNTER_TABLE
-            )
-            logging.info(
-                f"created {PERSON_TABLE, CONDITION_TABLE, PROCEDURE_OCCURRENCE_TABLE} and {ENCOUNTER_TABLE} tables."
-            )
+        mode = "overwrite" if overwrite else "append"
+        writer = lambda df, name: df.write.mode(mode).saveAsTable(name)
 
-        else:
-            person_df.write.saveAsTable(PERSON_TABLE)
-            condition_df.write.saveAsTable(CONDITION_TABLE)
-            procedure_occurrence_df.write.saveAsTable(
-                PROCEDURE_OCCURRENCE_TABLE
-            )
-            encounter_df.write.saveAsTable(ENCOUNTER_TABLE)
-            logging.info(
-                f"updated {PERSON_TABLE, CONDITION_TABLE, PROCEDURE_OCCURRENCE_TABLE} and {ENCOUNTER_TABLE} tables."
-            )
+        writer(person_df, PERSON_TABLE)
+        writer(condition_df, CONDITION_OCCURRENCE_TABLE)
+        writer(procedure_occurrence_df, PROCEDURE_OCCURRENCE_TABLE)
+        writer(visit_occurrence_df, VISIT_OCCURRENCE_TABLE)
+
+        logging.info(
+            "Created tables: %s, %s, %s, %s in %s",
+            PERSON_TABLE,
+            CONDITION_OCCURRENCE_TABLE,
+            PROCEDURE_OCCURRENCE_TABLE,
+            VISIT_OCCURRENCE_TABLE,
+            cdm_database,
+        )
 
         target.update(cdm_database, mapping_database)
+        return target
+
 
 class CdmToPersonDashboard(Transformer):
     def __init__(self):
         from pyspark.sql import SparkSession
+
         self.spark = SparkSession.getActiveSession()
-        
+
     def loadEntries(self):
-      raise NotImplementedError()
-      
+        raise NotImplementedError()
+
     def transform(
-            self,
-            source: OmopCdm,
-            target: PersonDashboard,
-            overwrite: bool = True,
+        self,
+        source: OmopCdm,
+        target: PersonDashboard,
+        overwrite: bool = True,
     ) -> PersonDashboard:
-      
         cdm_database = source.listDatabases()[0]
-  
-        self.spark.sql(f"USE {cdm_database}")
-  
+
+        self.spark.sql(f"USE `{cdm_database}`")
+
         person_df = self.spark.read.table(PERSON_TABLE)
-        condition_df = self.spark.read.table(CONDITION_TABLE)
+        condition_df = self.spark.read.table(CONDITION_OCCURRENCE_TABLE)
         procedure_occurrence_df = self.spark.read.table(PROCEDURE_OCCURRENCE_TABLE)
-  
-        encounter_df = self.spark.read.table(ENCOUNTER_TABLE)
-  
+        visit_occurrence_df = self.spark.read.table(VISIT_OCCURRENCE_TABLE)
+
         condition_summary_df = condition_df.transform(summarize_condition)
         procedure_occurrence_summary_df = procedure_occurrence_df.transform(
             summarize_procedure_occurrence
         )
-  
-        encounter_summary_df = encounter_df.transform(summarize_encounter)
-        person_dashboard_df  = (
+        encounter_summary_df = visit_occurrence_df.transform(summarize_encounter)
+
+        person_dashboard_df = (
             person_df.join(condition_summary_df, "person_id", "left")
             .join(procedure_occurrence_summary_df, "person_id", "left")
             .join(encounter_summary_df, "person_id", "left")
-            )
+        )
         target.update(person_dashboard_df)
+        return target
+
+
+# Backward-compatible names for existing imports
+CONDITION_TABLE = CONDITION_OCCURRENCE_TABLE
+ENCOUNTER_TABLE = VISIT_OCCURRENCE_TABLE
