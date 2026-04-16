@@ -144,7 +144,7 @@ def _ensure_mapping_stub(spark, mapping_database: str) -> None:
     """Create an empty staging table for future source→standard concept mappings."""
     spark.sql(f"CREATE DATABASE IF NOT EXISTS `{mapping_database}`")
     empty = spark.createDataFrame([], SOURCE_TO_CONCEPT_MAP_SCHEMA)
-    empty.write.mode("overwrite").saveAsTable(
+    empty.write.format("delta").mode("overwrite").saveAsTable(
         f"{mapping_database}.{SOURCE_TO_CONCEPT_MAP_TABLE}"
     )
 
@@ -183,7 +183,7 @@ class FhirBundlesToCdm(Transformer):
         logging.info("Writing OMOP-aligned tables to database %s", cdm_database)
 
         mode = "overwrite" if overwrite else "append"
-        writer = lambda df, name: df.write.mode(mode).saveAsTable(name)
+        writer = lambda df, name: df.write.format("delta").mode(mode).saveAsTable(name)
 
         writer(person_df, PERSON_TABLE)
         writer(condition_df, CONDITION_OCCURRENCE_TABLE)

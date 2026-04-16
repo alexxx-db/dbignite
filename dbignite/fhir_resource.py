@@ -246,7 +246,7 @@ class BundleFhirResource(FhirResource):
         sel = [col("bundleUUID"), col("timestamp"), col("id"), column]
         if "bulkExportCorrelationId" in e.columns:
             sel.insert(1, col("bulkExportCorrelationId"))
-        e.select(*sel).write.mode(write_mode).saveAsTable((location + "." + column).lstrip("."))
+        e.select(*sel).write.format("delta").mode(write_mode).saveAsTable((location + "." + column).lstrip("."))
 
     #
     # Returns a string representing ndjson for each grouping/bundle of FHIR resources
