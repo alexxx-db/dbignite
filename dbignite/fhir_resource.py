@@ -25,6 +25,27 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.types import ArrayType, StringType, StructType
 
+
+def _has_delta() -> bool:
+    """Check if Delta Lake is usable in the current Spark session."""
+    try:
+        from pyspark.sql import SparkSession
+        spark = SparkSession.getActiveSession()
+        if spark is None:
+            return False
+        # On Databricks, Delta is always the default catalog format.
+        # On OSS Spark, Delta requires explicit extensions configuration.
+        exts = spark.conf.get("spark.sql.extensions", "")
+        if "delta" in exts.lower():
+            return True
+        # Databricks runtime sets this implicitly
+        default_fmt = spark.conf.get("spark.sql.sources.default", "")
+        if default_fmt.lower() == "delta":
+            return True
+    except Exception:
+        pass
+    return False
+
 #
 #
 #  BUNDLE_SCHEMA - lightweight representation of first level json schema
@@ -107,7 +128,9 @@ class BundleFhirResource(FhirResource):
     #
     # Main entry to the FHIR resources in a bundle
     #
-    def entry(self, schemas = FhirSchemaModel()) -> DataFrame:
+    def entry(self, schemas=None) -> DataFrame:
+        if schemas is None:
+            schemas = FhirSchemaModel()
         if self._streaming:
             return self._parser(schemas=schemas)
         if self._entry is None:
@@ -147,7 +170,7 @@ class BundleFhirResource(FhirResource):
         )
         bundle_uuid = sha2(
             concat_ws(
-                lit("|"),
+                "|",
                 coalesce(corr, lit("")),
                 coalesce(input_file_name(), lit("")),
                 lit("ndjson"),
@@ -167,7 +190,9 @@ class BundleFhirResource(FhirResource):
     # Read and parse all data in raw_data dataframe
     #  @returns new dataframe with entry.x where x is an array of each resource provided
     #
-    def read_bundle_data(self, schemas = FhirSchemaModel()) -> DataFrame:
+    def read_bundle_data(self, schemas=None) -> DataFrame:
+        if schemas is None:
+            schemas = FhirSchemaModel()
         parsed = self._raw_data.select(
             from_json("resource", BundleFhirResource.BUNDLE_SCHEMA).alias("bundle"),
             col("resource").alias("_raw_resource"),
@@ -179,13 +204,12 @@ class BundleFhirResource(FhirResource):
             ),
             256,
         )
-        return (
-            parsed.select(
-                BundleFhirResource.list_entry_columns(schemas)
-                + [col("bundle.timestamp"), col("bundle.id"), col("_raw_resource")]
-            )
-            .withColumn("bundleUUID", bundle_uuid)
-            .drop("_raw_resource")
+        # Compute bundleUUID while bundle.id and _raw_resource are still available,
+        # then select the final columns and drop the raw resource.
+        with_uuid = parsed.withColumn("bundleUUID", bundle_uuid)
+        return with_uuid.select(
+            BundleFhirResource.list_entry_columns(schemas)
+            + [col("bundle.timestamp"), col("bundle.id"), col("bundleUUID")]
         )
     
     #
@@ -194,7 +218,9 @@ class BundleFhirResource(FhirResource):
     # @return a list of column transformations to select based upon the schemas provided
     #
     @staticmethod
-    def list_entry_columns(schemas, parent_column=col("bundle.entry.resource")):
+    def list_entry_columns(schemas, parent_column=None):
+        if parent_column is None:
+            parent_column = col("bundle.entry.resource")
         return [
             BundleFhirResource.__convert_from_json(
                 BundleFhirResource.__filter_resources(parent_column, resource_type),
@@ -268,7 +294,10 @@ class BundleFhirResource(FhirResource):
         sel = [col("bundleUUID"), col("timestamp"), col("id"), column]
         if "bulkExportCorrelationId" in e.columns:
             sel.insert(1, col("bulkExportCorrelationId"))
-        e.select(*sel).write.format("delta").mode(write_mode).saveAsTable((location + "." + column).lstrip("."))
+        w = e.select(*sel).write.mode(write_mode)
+        if _has_delta():
+            w = w.format("delta")
+        w.saveAsTable((location + "." + column).lstrip("."))
 
     #
     # Returns a string representing ndjson for each grouping/bundle of FHIR resources

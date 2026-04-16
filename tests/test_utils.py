@@ -2,7 +2,7 @@ import os
 import re
 
 import pytest
-from chispa import assert_schema_equality
+from chispa.schema_comparer import assert_schema_equality
 from shutil import rmtree
 
 from dbignite.omop.constants import (
