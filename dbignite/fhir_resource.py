@@ -2,10 +2,27 @@ from abc import ABC, abstractmethod
 import warnings, json
 from multiprocessing.pool import ThreadPool
 import multiprocessing as mp
-from typing import ClassVar, Optional, cast
+from typing import Optional, cast
 from dbignite.fhir_mapping_model import FhirSchemaModel
 from pyspark.sql import Column, DataFrame
-from pyspark.sql.functions import *
+from pyspark.sql.functions import (
+    coalesce,
+    col,
+    concat_ws,
+    expr,
+    filter,
+    from_json,
+    get_json_object,
+    input_file_name,
+    lit,
+    nullif,
+    sha2,
+    size,
+    sum,
+    transform,
+    trim,
+    upper,
+)
 from pyspark.sql.types import ArrayType, StringType, StructType
 
 #
@@ -234,9 +251,14 @@ class BundleFhirResource(FhirResource):
     #  @return None
     #
     def bulk_table_write(self, location = "",  write_mode = "append", columns = None):
-        pool = ThreadPool(max(1, mp.cpu_count() - 1))
         skip = {"id", "timestamp", "bundleUUID", "bulkExportCorrelationId"}
-        list(pool.map(lambda column: self.table_write(str(column), location, write_mode), ([c for c in self.entry().columns if c not in skip] if columns is None else columns)))
+        cols = [c for c in self.entry().columns if c not in skip] if columns is None else columns
+        pool = ThreadPool(min(4, max(1, mp.cpu_count() - 1)))
+        try:
+            pool.map(lambda column: self.table_write(str(column), location, write_mode), cols)
+        finally:
+            pool.close()
+            pool.join()
 
     #
     # Write an individual FHIR resource as a table

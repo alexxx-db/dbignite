@@ -45,10 +45,12 @@ class DataModel(ABC):
 class FhirBundles:
     """Load FHIR Bundle JSON (whole file per row) and explode to bundle entries."""
 
-    def __init__(self, defaultResource=None, **args):
+    def __init__(self, defaultResource=None, spark=None, **args):
         from pyspark.sql import SparkSession
 
-        self.spark = SparkSession.getActiveSession()
+        self.spark = spark if spark is not None else SparkSession.getActiveSession()
+        if self.spark is None:
+            raise RuntimeError("No active SparkSession — pass one explicitly or create one first")
         self.df = None
         if defaultResource is None:
             self.defaultResource = self.asWholeTextfile
@@ -78,12 +80,12 @@ class FhirBundles:
         raise NotImplementedError("asInlineJson is not implemented.")
 
     def asInlineJsonSingleton(self, path):
+        from pyspark.sql.functions import to_json, struct as _struct
+
+        df = self.spark.read.json(path)
+        all_cols = [df[c] for c in df.columns]
         return (
-            self.spark.read.json(
-                self.spark.read.json(path).rdd.map(
-                    lambda x: json.dumps({"entry_json": json.dumps(x.asDict())})
-                )
-            )
+            df.select(to_json(_struct(*all_cols)).alias("entry_json"))
             .withColumn("entry", from_json("entry_json", schema=ENTRY_SCHEMA))
         ).cache()
 
@@ -203,10 +205,12 @@ class FhirBundlesToCdm(Transformer):
 
 
 class CdmToPersonDashboard(Transformer):
-    def __init__(self):
+    def __init__(self, spark=None):
         from pyspark.sql import SparkSession
 
-        self.spark = SparkSession.getActiveSession()
+        self.spark = spark if spark is not None else SparkSession.getActiveSession()
+        if self.spark is None:
+            raise RuntimeError("No active SparkSession — pass one explicitly or create one first")
 
     def loadEntries(self):
         raise NotImplementedError()

@@ -36,7 +36,7 @@ def _infer_base_dir(path: str) -> str:
 def read_from_directory(
     path: str,
     resource_format: FhirFormat = FhirFormat.BUNDLE,
-    spark: SparkSession = SparkSession.getActiveSession(),
+    spark: Optional[SparkSession] = None,
     bulk_manifest_path: Optional[str] = None,
     auto_discover_bulk_manifest: bool = False,
 ) -> "FhirResource":
@@ -51,6 +51,8 @@ def read_from_directory(
       as ``path``, only files listed in the manifest are read; otherwise ``path`` is read as
       NDJSON (same as before).
     """
+    if spark is None:
+        spark = SparkSession.getActiveSession()
 
     if resource_format == FhirFormat.BUNDLE:
         data = spark.read.text(path, wholetext=True).select(col("value").alias("resource"))
@@ -105,7 +107,7 @@ class StreamingFhirResource:
 def read_from_stream(
     path: str,
     resource_format: FhirFormat = FhirFormat.BUNDLE,
-    spark: SparkSession = SparkSession.getActiveSession(),
+    spark: Optional[SparkSession] = None,
     max_files_per_trigger: str = "1",
     **read_stream_options,
 ) -> StreamingFhirResource:
@@ -116,6 +118,8 @@ def read_from_stream(
     ``writeStream``. Bulk manifest resolution is not applied here—use batch
     ``read_from_directory`` for manifest-driven paths, or preprocess paths yourself.
     """
+    if spark is None:
+        spark = SparkSession.getActiveSession()
     rs = spark.readStream
     for k, v in read_stream_options.items():
         rs = rs.option(k, v)

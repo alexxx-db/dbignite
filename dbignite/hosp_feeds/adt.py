@@ -1,6 +1,10 @@
-from pyspark.sql.functions import *
+import logging
+
+from pyspark.sql.functions import udf
 from pyspark.sql.types import StringType, StructType, StructField
 from pyspark.sql import SparkSession
+
+logger = logging.getLogger(__name__)
 
 """
  Referencing actions from https://pubs.vocera.com/vcts/vcts_2.5.1/help/vcts_config_help/topics/vcts_listofeventtypes.html
@@ -9,10 +13,9 @@ from pyspark.sql import SparkSession
 class ADTActions:
     def __init__(self):
         try:
-            self.register_udf(spark = SparkSession.getActiveSession())
+            self.register_udf()
         except Exception as e:
-            print("WARN: dbignite is not registering ADT actions as a Spark UDF due to")
-            print("WARN: " + str(e))
+            logger.warning("dbignite is not registering ADT actions as a Spark UDF: %s", e)
 
     @staticmethod
     def adt_msg():
@@ -63,7 +66,7 @@ class ADTActions:
     #
     @staticmethod
     def get_action_from_bundle(json_fhir_bundle):
-        return [ADTActions.adt_msg().get(x.get("resource").get("eventCoding").get("code")) for x in data.get("entry") if x.get("resource").get("resourceType") == "MessageHeader"][0]
+        return [ADTActions.adt_msg().get(x.get("resource").get("eventCoding").get("code")) for x in json_fhir_bundle.get("entry") if x.get("resource").get("resourceType") == "MessageHeader"][0]
 
     @staticmethod
     def get_action(action):
@@ -71,7 +74,11 @@ class ADTActions:
 
     #register as spark udf
     @staticmethod
-    def register_udf(spark = SparkSession.getActiveSession(), udf_name = "get_action"):
+    def register_udf(spark=None, udf_name="get_action"):
+        if spark is None:
+            spark = SparkSession.getActiveSession()
+        if spark is None:
+            raise RuntimeError("No active SparkSession — pass one explicitly or create one first")
         schema = StructType([
             StructField("action", StringType(), False),
             StructField("description", StringType(), False)
