@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbignite"
+version = "0.2.4"
+description = "Package for ingesting FHIR bundles into Delta Lake"
+readme = "README.md"
+license = {text = "Databricks License"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Amir Kermany"},
+    {name = "Nathan Buesgens"},
+    {name = "Rachel Sim"},
+    {name = "Aaron Zavora"},
+    {name = "William Smith"},
+    {name = "Jesse Young"},
+    {email = "labs@databricks.com"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pyspark>=3.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/databrickslabs/dbignite"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-spark>=0.6.0",
+    "chispa>=0.9.2",
+    "coverage",
+]
+
+[tool.setuptools.packages.find]
+include = ["dbignite*"]
+
+[tool.setuptools.package-data]
+dbignite = [
+    "schemas/r4/*.json",
+    "schemas/r5/*.json",
+    "schemas/ci-build/*.json",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore::DeprecationWarning"]
+spark_options = [
+    "spark.sql.catalogImplementation: in-memory",
+    "spark.driver.bindAddress: 127.0.0.1",
+]
