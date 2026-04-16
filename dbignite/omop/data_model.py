@@ -178,12 +178,11 @@ class FhirBundlesToCdm(Transformer):
         if mapping_database:
             _ensure_mapping_stub(self.spark, mapping_database)
 
-        self.spark.catalog.setCurrentDatabase(cdm_database)
-
         logging.info("Writing OMOP-aligned tables to database %s", cdm_database)
 
         mode = "overwrite" if overwrite else "append"
-        writer = lambda df, name: df.write.format("delta").mode(mode).saveAsTable(name)
+        fqn = lambda name: f"`{cdm_database}`.`{name}`"
+        writer = lambda df, name: df.write.format("delta").mode(mode).saveAsTable(fqn(name))
 
         writer(person_df, PERSON_TABLE)
         writer(condition_df, CONDITION_OCCURRENCE_TABLE)
@@ -192,10 +191,10 @@ class FhirBundlesToCdm(Transformer):
 
         logging.info(
             "Created tables: %s, %s, %s, %s in %s",
-            PERSON_TABLE,
-            CONDITION_OCCURRENCE_TABLE,
-            PROCEDURE_OCCURRENCE_TABLE,
-            VISIT_OCCURRENCE_TABLE,
+            fqn(PERSON_TABLE),
+            fqn(CONDITION_OCCURRENCE_TABLE),
+            fqn(PROCEDURE_OCCURRENCE_TABLE),
+            fqn(VISIT_OCCURRENCE_TABLE),
             cdm_database,
         )
 
@@ -220,12 +219,11 @@ class CdmToPersonDashboard(Transformer):
     ) -> PersonDashboard:
         cdm_database = source.listDatabases()[0]
 
-        self.spark.sql(f"USE `{cdm_database}`")
-
-        person_df = self.spark.read.table(PERSON_TABLE)
-        condition_df = self.spark.read.table(CONDITION_OCCURRENCE_TABLE)
-        procedure_occurrence_df = self.spark.read.table(PROCEDURE_OCCURRENCE_TABLE)
-        visit_occurrence_df = self.spark.read.table(VISIT_OCCURRENCE_TABLE)
+        fqn = lambda name: f"`{cdm_database}`.`{name}`"
+        person_df = self.spark.read.table(fqn(PERSON_TABLE))
+        condition_df = self.spark.read.table(fqn(CONDITION_OCCURRENCE_TABLE))
+        procedure_occurrence_df = self.spark.read.table(fqn(PROCEDURE_OCCURRENCE_TABLE))
+        visit_occurrence_df = self.spark.read.table(fqn(VISIT_OCCURRENCE_TABLE))
 
         condition_summary_df = condition_df.transform(summarize_condition)
         procedure_occurrence_summary_df = procedure_occurrence_df.transform(
