@@ -51,46 +51,55 @@ def _resource_type_filter(resource_type: str) -> Column:
     return (rt == resource_type) | (ru == resource_type)
 
 
-def entries_to_person(entries_df: DataFrame) -> DataFrame:
+def _parse_resource(
+    entries_df: DataFrame,
+    fhir_type: str,
+    extra_fields: list[StructField],
+    alias: str,
+) -> DataFrame:
+    """Filter entries by *fhir_type*, extend the resource schema with *extra_fields*,
+    and return a DataFrame with the parsed resource as column *alias*."""
     entry_schema = deepcopy(ENTRY_SCHEMA)
-    patient_schema = next(f.dataType for f in entry_schema.fields if f.name == "resource")
-    patient_schema.fields.extend(
-        [
-            StructField(
-                "name",
-                ArrayType(
-                    StructType(
-                        [
-                            StructField("given", ArrayType(StringType())),
-                            StructField("family", StringType()),
-                            StructField("text", StringType()),
-                        ]
-                    )
-                ),
-            ),
-            StructField("gender", StringType()),
-            StructField("birthDate", DateType()),
-            StructField(
-                "address",
-                ArrayType(
-                    StructType(
-                        [
-                            StructField("line", ArrayType(StringType())),
-                            StructField("city", StringType()),
-                            StructField("state", StringType()),
-                        ]
-                    )
-                ),
-            ),
-            StructField(
-                "extension", ArrayType(StructType([StructField("url", StringType())]))
-            ),
-        ]
+    resource_schema = next(f.dataType for f in entry_schema.fields if f.name == "resource")
+    resource_schema.fields.extend(extra_fields)
+    return (
+        entries_df.where(_resource_type_filter(fhir_type))
+        .withColumn(alias, from_json("entry_json", schema=entry_schema)["resource"])
     )
 
-    df = entries_df.where(_resource_type_filter("Patient")).withColumn(
-        "patient", from_json("entry_json", schema=entry_schema)["resource"]
-    )
+
+def entries_to_person(entries_df: DataFrame) -> DataFrame:
+    df = _parse_resource(entries_df, "Patient", [
+        StructField(
+            "name",
+            ArrayType(
+                StructType(
+                    [
+                        StructField("given", ArrayType(StringType())),
+                        StructField("family", StringType()),
+                        StructField("text", StringType()),
+                    ]
+                )
+            ),
+        ),
+        StructField("gender", StringType()),
+        StructField("birthDate", DateType()),
+        StructField(
+            "address",
+            ArrayType(
+                StructType(
+                    [
+                        StructField("line", ArrayType(StringType())),
+                        StructField("city", StringType()),
+                        StructField("state", StringType()),
+                    ]
+                )
+            ),
+        ),
+        StructField(
+            "extension", ArrayType(StructType([StructField("url", StringType())]))
+        ),
+    ], "patient")
     given0 = col("patient.name").getItem(0)
     person_name = coalesce(
         concat_ws(" ", given0.getField("given").getItem(0), given0.getField("family")),
@@ -118,61 +127,54 @@ def entries_to_person(entries_df: DataFrame) -> DataFrame:
 
 
 def entries_to_condition(entries_df: DataFrame) -> DataFrame:
-    entry_schema = deepcopy(ENTRY_SCHEMA)
-    condition_schema = next(f.dataType for f in entry_schema.fields if f.name == "resource")
-    condition_schema.fields.extend(
-        [
-            StructField(
-                "subject", StructType([StructField("reference", StringType())])
-            ),
-            StructField(
-                "encounter", StructType([StructField("reference", StringType())])
-            ),
-            StructField(
-                "code",
-                StructType(
-                    [
-                        StructField(
-                            "coding",
-                            ArrayType(
-                                StructType(
-                                    [
-                                        StructField("code", StringType()),
-                                        StructField("display", StringType()),
-                                        StructField("system", StringType()),
-                                    ]
-                                )
-                            ),
+    df = _parse_resource(entries_df, "Condition", [
+        StructField(
+            "subject", StructType([StructField("reference", StringType())])
+        ),
+        StructField(
+            "encounter", StructType([StructField("reference", StringType())])
+        ),
+        StructField(
+            "code",
+            StructType(
+                [
+                    StructField(
+                        "coding",
+                        ArrayType(
+                            StructType(
+                                [
+                                    StructField("code", StringType()),
+                                    StructField("display", StringType()),
+                                    StructField("system", StringType()),
+                                ]
+                            )
                         ),
-                        StructField("text", StringType()),
-                    ]
-                ),
+                    ),
+                    StructField("text", StringType()),
+                ]
             ),
-            StructField(
-                "clinicalStatus",
-                StructType(
-                    [
-                        StructField(
-                            "coding",
-                            ArrayType(
-                                StructType(
-                                    [
-                                        StructField("code", StringType()),
-                                        StructField("display", StringType()),
-                                    ]
-                                )
-                            ),
-                        )
-                    ]
-                ),
+        ),
+        StructField(
+            "clinicalStatus",
+            StructType(
+                [
+                    StructField(
+                        "coding",
+                        ArrayType(
+                            StructType(
+                                [
+                                    StructField("code", StringType()),
+                                    StructField("display", StringType()),
+                                ]
+                            )
+                        ),
+                    )
+                ]
             ),
-            StructField("onsetDateTime", TimestampType()),
-            StructField("abatementDateTime", TimestampType()),
-        ]
-    )
-    df = entries_df.where(_resource_type_filter("Condition")).withColumn(
-        "condition", from_json("entry_json", schema=entry_schema)["resource"]
-    )
+        ),
+        StructField("onsetDateTime", TimestampType()),
+        StructField("abatementDateTime", TimestampType()),
+    ], "condition")
     c = col("condition")
     coding0 = c.getField("code").getField("coding").getItem(0)
     cs = c.getField("clinicalStatus")
@@ -197,62 +199,52 @@ def entries_to_condition(entries_df: DataFrame) -> DataFrame:
 
 
 def entries_to_procedure_occurrence(entries_df: DataFrame) -> DataFrame:
-    entry_schema = deepcopy(ENTRY_SCHEMA)
-    procedure_occurrence_schema = next(
-        f.dataType for f in entry_schema.fields if f.name == "resource"
-    )
-    procedure_occurrence_schema.fields.extend(
-        [
-            StructField(
-                "subject", StructType([StructField("reference", StringType())])
-            ),
-            StructField(
-                "encounter", StructType([StructField("reference", StringType())])
-            ),
-            StructField(
-                "code",
-                StructType(
-                    [
-                        StructField(
-                            "coding",
-                            ArrayType(
-                                StructType(
-                                    [
-                                        StructField("code", StringType()),
-                                        StructField("display", StringType()),
-                                        StructField("system", StringType()),
-                                    ]
-                                )
-                            ),
+    df = _parse_resource(entries_df, "Procedure", [
+        StructField(
+            "subject", StructType([StructField("reference", StringType())])
+        ),
+        StructField(
+            "encounter", StructType([StructField("reference", StringType())])
+        ),
+        StructField(
+            "code",
+            StructType(
+                [
+                    StructField(
+                        "coding",
+                        ArrayType(
+                            StructType(
+                                [
+                                    StructField("code", StringType()),
+                                    StructField("display", StringType()),
+                                    StructField("system", StringType()),
+                                ]
+                            )
                         ),
-                        StructField("text", StringType()),
-                    ]
-                ),
+                    ),
+                    StructField("text", StringType()),
+                ]
             ),
-            StructField(
-                "performedPeriod",
-                StructType(
-                    [
-                        StructField("start", TimestampType()),
-                        StructField("end", TimestampType()),
-                    ]
-                ),
+        ),
+        StructField(
+            "performedPeriod",
+            StructType(
+                [
+                    StructField("start", TimestampType()),
+                    StructField("end", TimestampType()),
+                ]
             ),
-            StructField(
-                "location",
-                StructType(
-                    [
-                        StructField("reference", StringType()),
-                        StructField("display", StringType()),
-                    ]
-                ),
+        ),
+        StructField(
+            "location",
+            StructType(
+                [
+                    StructField("reference", StringType()),
+                    StructField("display", StringType()),
+                ]
             ),
-        ]
-    )
-    df = entries_df.where(_resource_type_filter("Procedure")).withColumn(
-        "procedure_occurrence",
-        from_json("entry_json", schema=entry_schema)["resource"],
-    )
+        ),
+    ], "procedure_occurrence")
     p = col("procedure_occurrence")
     coding0 = p.getField("code").getField("coding").getItem(0)
     return df.select(
@@ -275,122 +267,113 @@ def entries_to_procedure_occurrence(entries_df: DataFrame) -> DataFrame:
 
 def entries_to_visit_occurrence(entries_df: DataFrame) -> DataFrame:
     """Map FHIR Encounter → OMOP visit_occurrence-shaped row (subset of CDM columns)."""
-    entry_schema = deepcopy(ENTRY_SCHEMA)
-    encounter_schema = next(f.dataType for f in entry_schema.fields if f.name == "resource")
-
-    encounter_schema.fields.extend(
-        [
-            StructField(
-                "subject", StructType([StructField("reference", StringType())])
+    df = _parse_resource(entries_df, "Encounter", [
+        StructField(
+            "subject", StructType([StructField("reference", StringType())])
+        ),
+        StructField(
+            "period",
+            StructType(
+                [
+                    StructField("start", TimestampType()),
+                    StructField("end", TimestampType()),
+                ]
             ),
-            StructField(
-                "period",
+        ),
+        StructField(
+            "serviceProvider",
+            StructType(
+                [
+                    StructField("reference", StringType()),
+                    StructField("display", StringType()),
+                ]
+            ),
+        ),
+        StructField(
+            "type",
+            ArrayType(
                 StructType(
                     [
-                        StructField("start", TimestampType()),
-                        StructField("end", TimestampType()),
-                    ]
-                ),
-            ),
-            StructField(
-                "serviceProvider",
-                StructType(
-                    [
-                        StructField("reference", StringType()),
-                        StructField("display", StringType()),
-                    ]
-                ),
-            ),
-            StructField(
-                "type",
-                ArrayType(
-                    StructType(
-                        [
-                            StructField(
-                                "coding",
-                                ArrayType(
-                                    StructType(
-                                        [
-                                            StructField("code", StringType()),
-                                            StructField("display", StringType()),
-                                            StructField("system", StringType()),
-                                        ]
-                                    )
-                                ),
-                            ),
-                            StructField("text", StringType()),
-                        ]
-                    )
-                ),
-            ),
-            StructField(
-                "participant",
-                ArrayType(
-                    StructType(
-                        [
-                            StructField(
-                                "type",
-                                ArrayType(
-                                    StructType(
-                                        [
-                                            StructField(
-                                                "coding",
-                                                ArrayType(
-                                                    StructType(
-                                                        [
-                                                            StructField("code", StringType()),
-                                                            StructField("display", StringType()),
-                                                            StructField("system", StringType()),
-                                                        ]
-                                                    )
-                                                ),
-                                            ),
-                                            StructField("text", StringType()),
-                                        ]
-                                    )
-                                ),
-                            )
-                        ]
-                    )
-                ),
-            ),
-            StructField("status", StringType()),
-            StructField(
-                "identifier",
-                ArrayType(
-                    StructType(
-                        [
-                            StructField("use", StringType()),
-                            StructField("system", StringType()),
-                            StructField("value", StringType()),
-                        ]
-                    )
-                ),
-            ),
-            StructField(
-                "location",
-                ArrayType(
-                    StructType(
-                        [
-                            StructField(
-                                "location",
+                        StructField(
+                            "coding",
+                            ArrayType(
                                 StructType(
                                     [
-                                        StructField("reference", StringType()),
+                                        StructField("code", StringType()),
                                         StructField("display", StringType()),
+                                        StructField("system", StringType()),
                                     ]
-                                ),
-                            )
-                        ]
-                    )
-                ),
+                                )
+                            ),
+                        ),
+                        StructField("text", StringType()),
+                    ]
+                )
             ),
-        ]
-    )
-
-    df = entries_df.where(_resource_type_filter("Encounter")).withColumn(
-        "encounter", from_json("entry_json", schema=entry_schema)["resource"]
-    )
+        ),
+        StructField(
+            "participant",
+            ArrayType(
+                StructType(
+                    [
+                        StructField(
+                            "type",
+                            ArrayType(
+                                StructType(
+                                    [
+                                        StructField(
+                                            "coding",
+                                            ArrayType(
+                                                StructType(
+                                                    [
+                                                        StructField("code", StringType()),
+                                                        StructField("display", StringType()),
+                                                        StructField("system", StringType()),
+                                                    ]
+                                                )
+                                            ),
+                                        ),
+                                        StructField("text", StringType()),
+                                    ]
+                                )
+                            ),
+                        )
+                    ]
+                )
+            ),
+        ),
+        StructField("status", StringType()),
+        StructField(
+            "identifier",
+            ArrayType(
+                StructType(
+                    [
+                        StructField("use", StringType()),
+                        StructField("system", StringType()),
+                        StructField("value", StringType()),
+                    ]
+                )
+            ),
+        ),
+        StructField(
+            "location",
+            ArrayType(
+                StructType(
+                    [
+                        StructField(
+                            "location",
+                            StructType(
+                                [
+                                    StructField("reference", StringType()),
+                                    StructField("display", StringType()),
+                                ]
+                            ),
+                        )
+                    ]
+                )
+            ),
+        ),
+    ], "encounter")
     e = col("encounter")
     type0 = e.getField("type").getItem(0)
     coding0 = type0.getField("coding").getItem(0)
