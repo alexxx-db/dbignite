@@ -19,38 +19,36 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9"]
+        python-version: ["3.9", "3.10", "3.11"]
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
     - name: Set Spark env
       run: |
         export SPARK_LOCAL_IP=127.0.0.1
-        export SPARK_SUBMIT_OPTS="--illegal-access=permit -Dio.netty.tryReflectionSetAccessible=true"
 
     - name: Install dependencies
       run: |
         pip install --upgrade pip
-        pip install pytest wheel
-        pip install coverage
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install -e ".[dev]"
     - name: Generate coverage report
       run: |
         coverage run -m pytest tests/test_*.py
         coverage xml
-        
+
     - name: Publish test coverage
-      uses: codecov/codecov-action@v2
+      uses: codecov/codecov-action@v4
 
-    - name: Build
+    - name: Build wheel
       run: |
-        python setup.py bdist_wheel --universal
+        pip install build
+        python -m build --wheel
 
-    - uses: actions/upload-artifact@v2
+    - uses: actions/upload-artifact@v4
       with:
-        name: dbignite-0.1-py2.py3-none-any.whl
-        path: dist/dbignite-0.1-py2.py3-none-any.whl
+        name: dbignite-wheel-py${{ matrix.python-version }}
+        path: dist/*.whl
