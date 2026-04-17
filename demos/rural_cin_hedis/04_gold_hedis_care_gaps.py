@@ -2,13 +2,13 @@
 # COMPUTE: Serverless (Serverless SQL Warehouse for scheduled refresh)
 
 # MAGIC %md
-# MAGIC # Nebraska CIN — Gold Layer: HEDIS Care Gap Identification
+# MAGIC # Rural CIN — Gold Layer: HEDIS Care Gap Identification
 # MAGIC
 # MAGIC **What this notebook proves:** Five HEDIS measures computed as pure SQL against the
 # MAGIC deduplicated silver layer, materialized as gold tables, refreshable daily, and queryable
 # MAGIC from Tableau or Genie without a custom extract.
 # MAGIC
-# MAGIC **The Cibolo pain point it addresses:** *"We manually extract HEDIS data from Garage
+# MAGIC **The CIN pain point it addresses:** *"We manually extract HEDIS data from the legacy EHR
 # MAGIC quarterly. It takes weeks, the numbers are always wrong, and by the time we have them
 # MAGIC the intervention window has closed."*
 # MAGIC
@@ -27,7 +27,7 @@
 # COMMAND ----------
 
 # DBTITLE 1,Parameters
-dbutils.widgets.text("catalog", "nebraska_cin_catalog", "CIN Catalog")
+dbutils.widgets.text("catalog", "demo_cin_catalog", "CIN Catalog")
 catalog = dbutils.widgets.get("catalog")
 
 spark.sql(f"USE CATALOG `{catalog}`")
@@ -135,7 +135,7 @@ mammograms AS (
         p.procedure_code IN ('24623002', '71651007')
         OR lower(p.procedure_display) LIKE '%mammogra%'
     )
-    AND p.performed_start >= date_add('{measurement_year}-01-01', -93)  -- 27 months back
+    AND p.performed_start >= add_months('{measurement_year}-01-01', -27)  -- 27-month lookback per HEDIS BCS spec
     AND p.performed_start <= '{measurement_year}-12-31'
 ),
 
@@ -209,7 +209,7 @@ screenings AS (
         p.procedure_code IN ('73761001', '174158000')  -- Colonoscopy, screening colonoscopy
         OR lower(p.procedure_display) LIKE '%colonoscopy%'
     )
-    AND p.performed_start >= date_add('{measurement_year}-12-31', -3650)  -- 10 years
+    AND p.performed_start >= add_months('{measurement_year}-12-31', -120)  -- 10-year lookback per HEDIS COL spec
 
     UNION
 
@@ -494,7 +494,7 @@ display(spark.sql(f"""
 # MAGIC ```
 # MAGIC Server:    <workspace-url>
 # MAGIC HTTP Path: /sql/1.0/warehouses/<warehouse-id>
-# MAGIC Catalog:   nebraska_cin_catalog
+# MAGIC Catalog:   demo_cin_catalog
 # MAGIC Schema:    gold
 # MAGIC Table:     hedis_care_gaps
 # MAGIC ```
@@ -506,7 +506,7 @@ display(spark.sql(f"""
 # MAGIC ```sql
 # MAGIC -- Create a Genie space pointing to the gold schema
 # MAGIC -- Workspace UI: SQL > Genie Spaces > New
-# MAGIC -- Tables: nebraska_cin_catalog.gold.hedis_care_gaps
+# MAGIC -- Tables: demo_cin_catalog.gold.hedis_care_gaps
 # MAGIC --
 # MAGIC -- Sample questions for care managers:
 # MAGIC --   "Show me patients with open AWV gaps in the last 6 months"
@@ -517,7 +517,7 @@ display(spark.sql(f"""
 # MAGIC Genie uses the same Serverless SQL Warehouse — no additional infrastructure.
 # MAGIC Natural language queries are translated to SQL against the gold view.
 # MAGIC **We do not pick a winner between Tableau and Genie.** Both connect to the same view.
-# MAGIC Richard's team decides based on their hospital distribution requirements.
+# MAGIC The analytics lead's team decides based on their hospital distribution requirements.
 
 # COMMAND ----------
 
@@ -525,8 +525,8 @@ display(spark.sql(f"""
 # MAGIC ---
 # MAGIC **Demo complete.**
 # MAGIC
-# MAGIC **Cost footprint:** Serverless SQL Warehouse for daily gold refresh. At Nebraska MVP
-# MAGIC scale (14 hospitals, ~50K patients, 5 HEDIS measures):
+# MAGIC **Cost footprint:** Serverless SQL Warehouse for daily gold refresh. At production
+# MAGIC scale (multiple hospitals, ~50K patients, 5 HEDIS measures):
 # MAGIC
 # MAGIC | Component | Daily DBUs | Monthly DBUs | Monthly cost (est.) |
 # MAGIC |-----------|-----------|-------------|-------------------|

@@ -2,17 +2,17 @@
 # COMPUTE: Serverless
 
 # MAGIC %md
-# MAGIC # Nebraska CIN — Master Patient Index (MPI) Deduplication
+# MAGIC # Rural CIN — Master Patient Index (MPI) Deduplication
 # MAGIC
 # MAGIC **What this notebook proves:** Deterministic patient matching using SSN, name+DOB, and
 # MAGIC EMPI identifiers — catches the same patient arriving from different hospital feeds and
 # MAGIC resolves them to a single identity.
 # MAGIC
-# MAGIC **The Cibolo pain point it addresses:** *"Garage has no MPI. If a patient visits two
+# MAGIC **The CIN pain point it addresses:** *"the legacy EHR has no MPI. If a patient visits two
 # MAGIC network hospitals, they show up as two patients in every report. Our HEDIS denominators
 # MAGIC are inflated and our rates look worse than they are."*
 # MAGIC
-# MAGIC **The defensible business outcome:** Single patient identity across 14 hospitals.
+# MAGIC **The defensible business outcome:** Single patient identity across multiple hospitals.
 # MAGIC Denominator accuracy is the foundation of every HEDIS measure — without it, rates are
 # MAGIC unreliable and pay-for-performance bonuses are left on the table.
 # MAGIC
@@ -22,7 +22,7 @@
 # COMMAND ----------
 
 # DBTITLE 1,Parameters
-dbutils.widgets.text("catalog", "nebraska_cin_catalog", "CIN Catalog")
+dbutils.widgets.text("catalog", "demo_cin_catalog", "CIN Catalog")
 catalog = dbutils.widgets.get("catalog")
 
 spark.sql(f"USE CATALOG `{catalog}`")
@@ -230,7 +230,7 @@ print(f"Duplicates resolved:         {dupes_resolved}")
 print(f"Dedup rate:                  {dupes_resolved/before_count*100:.1f}%")
 print()
 print("Without MPI, every duplicate inflates HEDIS denominators.")
-print(f"At Nebraska scale (14 hospitals), even a 5% duplicate rate means")
+print(f"At the network scale (multiple hospitals), even a 5% duplicate rate means")
 print(f"~{int(after_count * 0.05)} phantom patients distorting every quality measure.")
 
 # COMMAND ----------
@@ -258,6 +258,6 @@ display(
 # MAGIC **What's next:** [04_gold_hedis_care_gaps](04_gold_hedis_care_gaps) — Five HEDIS measures
 # MAGIC computed against the deduplicated silver layer. Denominators are now accurate.
 # MAGIC
-# MAGIC **Cost footprint:** Serverless. At Nebraska MVP scale: est. 2-3 DBUs per incremental
+# MAGIC **Cost footprint:** Serverless. At production scale: est. 2-3 DBUs per incremental
 # MAGIC MPI run. The MERGE-based incremental update (new hospital feed → match against master)
 # MAGIC is the most compute-intensive step in the pipeline. Monthly: ~20-30 DBUs ($4-6/month).

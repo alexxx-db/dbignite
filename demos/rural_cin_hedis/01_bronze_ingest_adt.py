@@ -4,13 +4,13 @@
 # It is executed by the pipeline created in 00_setup_uc_catalogs.
 
 # MAGIC %md
-# MAGIC # Nebraska CIN — Bronze Layer: ADT Ingest with Quality Enforcement
+# MAGIC # Rural CIN — Bronze Layer: ADT Ingest with Quality Enforcement
 # MAGIC
 # MAGIC **What this notebook proves:** Raw FHIR bundles land in Delta within 15 minutes of receipt,
 # MAGIC with automatic quality enforcement. Bad records are quarantined visibly — not silently
 # MAGIC dropped, not logged to a file nobody reads.
 # MAGIC
-# MAGIC **The Cibolo pain point it addresses:** *"Garage is a black box — when we lose a patient
+# MAGIC **The CIN pain point it addresses:** *"the legacy EHR is a black box — when we lose a patient
 # MAGIC record, we don't find out until the HEDIS numbers are wrong three months later."* The
 # MAGIC 15-minute TCM billing window is unachievable without a pipeline that ingests within SLA
 # MAGIC and proves it caught every record.
@@ -170,7 +170,7 @@ def raw_adt_events():
 # MAGIC ## Quarantine — `bronze.quarantine_adt`
 # MAGIC
 # MAGIC Records that **fail** quality rules land here. This is the direct counter-story to
-# MAGIC Garage's silent data loss. Every rejected record is visible, queryable, and timestamped.
+# MAGIC the legacy EHR's silent data loss. Every rejected record is visible, queryable, and timestamped.
 # MAGIC
 # MAGIC In the demo, the malformed ADT message (missing Patient.id) generated in Notebook 00
 # MAGIC should appear here.
@@ -208,8 +208,8 @@ def quarantine_adt():
 # MAGIC **What's next:** [02_silver_fhir_normalize](02_silver_fhir_normalize) — dbignite parses the
 # MAGIC raw FHIR bundles into typed, queryable silver tables.
 # MAGIC
-# MAGIC **Cost footprint:** DLT Serverless Triggered mode. At Nebraska MVP scale (~500 ADT
-# MAGIC messages/day x 14 hospitals = 7,000 msgs/day): est. 2-4 DBUs per trigger.
+# MAGIC **Cost footprint:** DLT Serverless Triggered mode. At production scale (~500 ADT
+# MAGIC messages/day x multiple hospitals = 7,000 msgs/day): est. 2-4 DBUs per trigger.
 # MAGIC Zero idle cost — the pipeline shuts down after each triggered run.
 # MAGIC Continuous mode would cost ~720 DBUs/day for an always-on pipeline.
 # MAGIC Triggered mode at 4 runs/day = 8-16 DBUs/day. **98% cost reduction vs. Continuous.**

@@ -2,14 +2,14 @@
 # COMPUTE: Serverless
 
 # MAGIC %md
-# MAGIC # Nebraska CIN — Infrastructure & Governance Setup
+# MAGIC # Rural CIN — Infrastructure & Governance Setup
 # MAGIC
 # MAGIC **What this notebook proves:** Structural data isolation between CIN networks at the Unity Catalog
 # MAGIC level. Each network gets its own catalog — not a shared database with row-level filtering,
 # MAGIC but a physically separate namespace with IAM-enforced boundaries.
 # MAGIC
-# MAGIC **The Cibolo pain point it addresses:** *"If Nebraska sees North Dakota's data, we're in
-# MAGIC big trouble."* Current Garage architecture has no network-level isolation. All data lives in
+# MAGIC **The CIN pain point it addresses:** *"If the network sees Network B's data, we're in
+# MAGIC big trouble."* The legacy EHR architecture has no network-level isolation. All data lives in
 # MAGIC one flat namespace with no audit trail on access boundaries.
 # MAGIC
 # MAGIC **The defensible business outcome:** Each CIN gets its own catalog. Isolation is enforced
@@ -32,9 +32,9 @@
 # COMMAND ----------
 
 # DBTITLE 1,Parameters
-dbutils.widgets.text("catalog", "nebraska_cin_catalog", "CIN Catalog")
+dbutils.widgets.text("catalog", "demo_cin_catalog", "CIN Catalog")
 # To stamp a second network, change this single parameter:
-# dbutils.widgets.text("catalog", "roughrider_cin_catalog", "CIN Catalog")  # North Dakota
+# dbutils.widgets.text("catalog", "network_b_cin_catalog", "CIN Catalog")  # Network B
 
 catalog = dbutils.widgets.get("catalog")
 
@@ -70,7 +70,7 @@ print(f"Catalog `{catalog}` ready with bronze/silver/gold schemas and raw_feeds 
 # MAGIC ## 2. Load Synthetic FHIR Data into Volume
 # MAGIC
 # MAGIC Copy Synthea FHIR bundles from the public S3 dataset into our Volume.
-# MAGIC These represent the ADT feeds and clinical data that flow from the 14 member hospitals.
+# MAGIC These represent the ADT feeds and clinical data that flow from the multiple member hospitals.
 
 # COMMAND ----------
 
@@ -114,7 +114,7 @@ print(f"Staged {len(adt_files)} ADT records in {adt_volume}")
 # MAGIC ## 3. Generate Malformed ADT Message
 # MAGIC
 # MAGIC This is the quarantine trigger for Notebook 01. A FHIR bundle where the Patient
-# MAGIC resource is missing its `id` field — the kind of silent data corruption that Garage
+# MAGIC resource is missing its `id` field — the kind of silent data corruption that the legacy EHR
 # MAGIC currently drops without a trace.
 
 # COMMAND ----------
@@ -133,14 +133,14 @@ malformed_bundle = {
                     "system": "http://terminology.hl7.org/CodeSystem/v2-0003",
                     "code": "ADT_A01"
                 },
-                "source": {"name": "GarageEHR-Rural-Hospital-7"}
+                "source": {"name": "LegacyEHR-Rural-Hospital-7"}
             }
         },
         {
             "resource": {
                 "resourceType": "Patient",
                 # id is MISSING — this is the defect
-                # In Garage, this record would silently disappear.
+                # In the legacy EHR, this record would silently disappear.
                 # In this pipeline, it lands in bronze.quarantine_adt.
                 "name": [{"given": ["Jane"], "family": "Doe"}],
                 "gender": "female",
@@ -233,18 +233,18 @@ print("While it runs, open notebook 01_bronze_ingest_adt to walk through the pip
 
 # -- Demonstrates structural isolation. Do not run in demo unless asked.
 #
-# -- Nebraska analyst can see Nebraska data:
-# GRANT USE CATALOG ON CATALOG nebraska_cin_catalog TO `nebraska_analyst@cibolohealth.com`;
-# GRANT USE SCHEMA ON SCHEMA nebraska_cin_catalog.gold TO `nebraska_analyst@cibolohealth.com`;
-# GRANT SELECT ON SCHEMA nebraska_cin_catalog.gold TO `nebraska_analyst@cibolohealth.com`;
+# -- Network A analyst can see Network A data:
+# GRANT USE CATALOG ON CATALOG demo_cin_catalog TO `network_a_analyst@example-cin.com`;
+# GRANT USE SCHEMA ON SCHEMA demo_cin_catalog.gold TO `network_a_analyst@example-cin.com`;
+# GRANT SELECT ON SCHEMA demo_cin_catalog.gold TO `network_a_analyst@example-cin.com`;
 #
-# -- North Dakota analyst can see North Dakota data:
-# GRANT USE CATALOG ON CATALOG roughrider_cin_catalog TO `nd_analyst@cibolohealth.com`;
-# GRANT USE SCHEMA ON SCHEMA roughrider_cin_catalog.gold TO `nd_analyst@cibolohealth.com`;
-# GRANT SELECT ON SCHEMA roughrider_cin_catalog.gold TO `nd_analyst@cibolohealth.com`;
+# -- Network B analyst can see Network B data:
+# GRANT USE CATALOG ON CATALOG network_b_cin_catalog TO `network_b_analyst@example-cin.com`;
+# GRANT USE SCHEMA ON SCHEMA network_b_cin_catalog.gold TO `network_b_analyst@example-cin.com`;
+# GRANT SELECT ON SCHEMA network_b_cin_catalog.gold TO `network_b_analyst@example-cin.com`;
 #
-# -- A nebraska_analyst querying roughrider_cin_catalog fails at the catalog level,
-# -- not a WHERE clause. This is the "if Nebraska sees North Dakota's data, we're in
+# -- A network_a_analyst querying network_b_cin_catalog fails at the catalog level,
+# -- not a WHERE clause. This is the "if the network sees Network B's data, we're in
 # -- big trouble" guarantee. The query doesn't return zero rows — it returns
 # -- ACCESS_DENIED before it even parses the table name.
 

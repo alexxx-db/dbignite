@@ -2,14 +2,14 @@
 # COMPUTE: Serverless
 
 # MAGIC %md
-# MAGIC # Nebraska CIN — Silver Layer: FHIR Normalization with dbignite
+# MAGIC # Rural CIN — Silver Layer: FHIR Normalization with dbignite
 # MAGIC
 # MAGIC **What this notebook proves:** dbignite transforms nested FHIR R4 bundles into queryable,
 # MAGIC typed Delta tables — Patient, Condition, Encounter, Procedure, Observation — without
 # MAGIC custom parsers. New hospital onboarding is configuration, not code.
 # MAGIC
-# MAGIC **The Cibolo pain point it addresses:** *"Every report we build requires a custom extract
-# MAGIC because nobody can query FHIR JSON natively."* 14 rural hospitals x different EHR vendors
+# MAGIC **The CIN pain point it addresses:** *"Every report we build requires a custom extract
+# MAGIC because nobody can query FHIR JSON natively."* multiple rural hospitals x different EHR vendors
 # MAGIC (Cerner, Epic, MEDITECH) = an explosion of one-off parsers that break on every EHR upgrade.
 # MAGIC
 # MAGIC **The defensible business outcome:** One parser (dbignite) handles all FHIR R4 resources
@@ -22,7 +22,7 @@
 # COMMAND ----------
 
 # DBTITLE 1,Parameters
-dbutils.widgets.text("catalog", "nebraska_cin_catalog", "CIN Catalog")
+dbutils.widgets.text("catalog", "demo_cin_catalog", "CIN Catalog")
 catalog = dbutils.widgets.get("catalog")
 volume_path = f"/Volumes/{catalog}/bronze/raw_feeds"
 
@@ -265,9 +265,9 @@ print(f"MedicationRequests: {medication_df.count()} rows")
 # MAGIC %md
 # MAGIC ## 3. FHIR Round-Trip: Silver → FHIR Bundle
 # MAGIC
-# MAGIC This proves the Gold→Garage re-feed story from the proposal: we can take clean,
+# MAGIC This proves the Gold→the legacy EHR re-feed story from the proposal: we can take clean,
 # MAGIC normalized data and write it back as a valid FHIR Bundle. If a downstream system
-# MAGIC (Garage, a payer portal, a registry) needs FHIR, we produce it from the silver layer
+# MAGIC (the legacy EHR, a payer portal, a registry) needs FHIR, we produce it from the silver layer
 # MAGIC — not by extracting from the messy source.
 
 # COMMAND ----------
@@ -329,6 +329,6 @@ display(spark.sql(f"""
 # MAGIC **What's next:** [03_silver_mpi_dedup](03_silver_mpi_dedup) — Deterministic patient matching
 # MAGIC across hospitals. The single most impactful step for HEDIS denominator accuracy.
 # MAGIC
-# MAGIC **Cost footprint:** Serverless notebook compute. At Nebraska MVP scale (~50K patients,
+# MAGIC **Cost footprint:** Serverless notebook compute. At production scale (~50K patients,
 # MAGIC ~2M clinical records): est. 5-8 DBUs per full refresh, <1 DBU for incremental.
 # MAGIC Monthly steady-state: ~30-60 DBUs ($6-12/month at list price).
