@@ -1,0 +1,471 @@
+# Automated Release Pipeline
+#
+# Two triggers:
+#   1. Push a tag (v*) — manual release with a specific version
+#   2. Workflow dispatch — trigger a release from the GitHub UI with version bump choice
+#
+# Pipeline: Test → Build → GitHub Release → PyPI (optional) → Databricks Volume
+#
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch   # 0.2.4 → 0.2.5
+          - minor   # 0.2.4 → 0.3.0
+          - major   # 0.2.4 → 1.0.0
+      publish_pypi:
+        description: 'Publish to PyPI'
+        required: false
+        default: false
+        type: boolean
+      deploy_databricks:
+        description: 'Deploy wheel to Databricks Volume'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # -----------------------------------------------------------------------
+  # 0. Version bump (only for workflow_dispatch)
+  # -----------------------------------------------------------------------
+  bump-version:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      tag: ${{ steps.bump.outputs.tag }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Compute new version
+      id: bump
+      run: |
+        pip install tomli tomli-w
+        python - <<'PYEOF'
+        import tomli, tomli_w, os
+
+        with open("pyproject.toml", "rb") as f:
+            config = tomli.load(f)
+
+        current = config["project"]["version"]
+        major, minor, patch = [int(x) for x in current.split(".")]
+
+        bump = "${{ inputs.bump }}"
+        if bump == "major":
+            major, minor, patch = major + 1, 0, 0
+        elif bump == "minor":
+            minor, patch = minor + 1, 0
+        else:
+            patch += 1
+
+        new_version = f"{major}.{minor}.{patch}"
+        config["project"]["version"] = new_version
+
+        with open("pyproject.toml", "wb") as f:
+            tomli_w.dump(config, f)
+
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"new_version={new_version}\n")
+            f.write(f"tag=v{new_version}\n")
+
+        print(f"Bumped {current} → {new_version}")
+        PYEOF
+
+    - name: Commit version bump
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add pyproject.toml
+        git commit -m "Release v${{ steps.bump.outputs.new_version }}"
+        git tag -a "v${{ steps.bump.outputs.new_version }}" -m "Release v${{ steps.bump.outputs.new_version }}"
+        git push origin HEAD --tags
+
+  # -----------------------------------------------------------------------
+  # 1. Resolve the version (from tag or bump)
+  # -----------------------------------------------------------------------
+  resolve-version:
+    runs-on: ubuntu-latest
+    needs: [bump-version]
+    if: always() && (needs.bump-version.result == 'success' || needs.bump-version.result == 'skipped')
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+
+    steps:
+    - name: Resolve version
+      id: resolve
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "version=${{ needs.bump-version.outputs.new_version }}" >> $GITHUB_OUTPUT
+          echo "tag=${{ needs.bump-version.outputs.tag }}" >> $GITHUB_OUTPUT
+        else
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=$TAG" >> $GITHUB_OUTPUT
+          echo "tag=v$TAG" >> $GITHUB_OUTPUT
+        fi
+
+  # -----------------------------------------------------------------------
+  # 2. Test (gate the release)
+  # -----------------------------------------------------------------------
+  test:
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.resolve-version.outputs.tag }}
+
+    - name: Set up Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install and test
+      run: |
+        pip install --upgrade pip
+        pip install -e ".[dev]"
+        pytest tests/test_*.py -v --timeout=120
+      env:
+        SPARK_LOCAL_IP: 127.0.0.1
+        PYSPARK_PYTHON: python
+        PYSPARK_DRIVER_PYTHON: python
+
+  # -----------------------------------------------------------------------
+  # 3. Build wheel + sdist
+  # -----------------------------------------------------------------------
+  build:
+    needs: [resolve-version, test]
+    runs-on: ubuntu-latest
+    outputs:
+      wheel_name: ${{ steps.build.outputs.wheel_name }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.resolve-version.outputs.tag }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Build
+      id: build
+      run: |
+        pip install build
+        python -m build
+        WHEEL=$(ls dist/*.whl)
+        echo "wheel_name=$(basename $WHEEL)" >> $GITHUB_OUTPUT
+        echo "Built: $WHEEL"
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dbignite-dist
+        path: dist/
+        retention-days: 90
+
+  # -----------------------------------------------------------------------
+  # 4. Generate changelog from commits since last tag
+  # -----------------------------------------------------------------------
+  changelog:
+    needs: [resolve-version]
+    runs-on: ubuntu-latest
+    outputs:
+      changelog: ${{ steps.changelog.outputs.changelog }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        VERSION="${{ needs.resolve-version.outputs.version }}"
+        TAG="${{ needs.resolve-version.outputs.tag }}"
+
+        # Find the previous tag
+        PREV_TAG=$(git tag --sort=-v:refname | grep -v "^$TAG$" | head -1)
+
+        if [ -z "$PREV_TAG" ]; then
+          RANGE="HEAD"
+          HEADER="Initial release"
+        else
+          RANGE="${PREV_TAG}..${TAG}"
+          HEADER="Changes since ${PREV_TAG}"
+        fi
+
+        # Generate changelog grouped by type
+        {
+          echo "## $HEADER"
+          echo ""
+
+          # Features
+          FEATURES=$(git log $RANGE --pretty=format:"- %s" --grep="^feat" --grep="^add" --grep="^Add" -i 2>/dev/null)
+          if [ -n "$FEATURES" ]; then
+            echo "### Features"
+            echo "$FEATURES"
+            echo ""
+          fi
+
+          # Fixes
+          FIXES=$(git log $RANGE --pretty=format:"- %s" --grep="^fix" --grep="^Fix" --grep="^Bug" -i 2>/dev/null)
+          if [ -n "$FIXES" ]; then
+            echo "### Fixes"
+            echo "$FIXES"
+            echo ""
+          fi
+
+          # All other commits
+          echo "### All Changes"
+          git log $RANGE --pretty=format:"- %s (%h)" 2>/dev/null || echo "- Initial release"
+          echo ""
+        } > /tmp/changelog.md
+
+        # Store as output (multiline)
+        {
+          echo "changelog<<CHANGELOG_EOF"
+          cat /tmp/changelog.md
+          echo "CHANGELOG_EOF"
+        } >> $GITHUB_OUTPUT
+
+  # -----------------------------------------------------------------------
+  # 5. Create GitHub Release
+  # -----------------------------------------------------------------------
+  github-release:
+    needs: [resolve-version, build, changelog]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dbignite-dist
+        path: dist/
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ needs.resolve-version.outputs.tag }}
+        name: dbignite ${{ needs.resolve-version.outputs.version }}
+        body: |
+          # dbignite ${{ needs.resolve-version.outputs.version }}
+
+          ${{ needs.changelog.outputs.changelog }}
+
+          ## Installation
+
+          **pip (from this release):**
+          ```bash
+          pip install https://github.com/${{ github.repository }}/releases/download/${{ needs.resolve-version.outputs.tag }}/${{ needs.build.outputs.wheel_name }}
+          ```
+
+          **Databricks notebook:**
+          ```python
+          %pip install /Volumes/<catalog>/libraries/wheels/${{ needs.build.outputs.wheel_name }}
+          ```
+
+          **From source:**
+          ```bash
+          pip install git+https://github.com/${{ github.repository }}.git@${{ needs.resolve-version.outputs.tag }}
+          ```
+        files: dist/*
+        fail_on_unmatched_files: true
+        draft: false
+        prerelease: false
+
+  # -----------------------------------------------------------------------
+  # 6. Publish to PyPI (optional, gated by input)
+  # -----------------------------------------------------------------------
+  publish-pypi:
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true) ||
+      (github.event_name == 'push' && contains(github.ref, 'refs/tags/v'))
+    environment:
+      name: pypi
+      url: https://pypi.org/project/dbignite/
+
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dbignite-dist
+        path: dist/
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Publish to PyPI
+      run: |
+        pip install twine
+        twine upload dist/*
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+      continue-on-error: true  # Don't fail the release if PyPI isn't configured yet
+
+  # -----------------------------------------------------------------------
+  # 7. Deploy to Databricks workspace
+  # -----------------------------------------------------------------------
+  deploy-databricks:
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'workflow_dispatch' && inputs.deploy_databricks == true) ||
+      (github.event_name == 'push')
+
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dbignite-dist
+        path: dist/
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install Databricks SDK
+      run: pip install databricks-sdk
+
+    - name: Deploy to Databricks Volume
+      run: |
+        python - <<'PYEOF'
+        import os, glob
+        from databricks.sdk import WorkspaceClient
+
+        w = WorkspaceClient(
+            host=os.environ["DATABRICKS_HOST"],
+            token=os.environ["DATABRICKS_TOKEN"],
+        )
+
+        catalog = os.environ.get("DATABRICKS_CATALOG", "hls_workshop")
+        version = os.environ["VERSION"]
+        volume_path = f"/Volumes/{catalog}/libraries/wheels"
+
+        # Ensure volume exists
+        try:
+            w.volumes.read(f"{catalog}.libraries.wheels")
+        except Exception:
+            try:
+                from databricks.sdk.service.catalog import VolumeType
+                w.schemas.create(name="libraries", catalog_name=catalog)
+            except Exception:
+                pass
+            try:
+                w.volumes.create(
+                    catalog_name=catalog,
+                    schema_name="libraries",
+                    name="wheels",
+                    volume_type=VolumeType.MANAGED,
+                    comment="Library wheels for automated deployment",
+                )
+                print(f"Created volume: {catalog}.libraries.wheels")
+            except Exception as e:
+                print(f"Volume may already exist: {e}")
+
+        # Upload the wheel
+        wheel_files = glob.glob("dist/*.whl")
+        if not wheel_files:
+            print("ERROR: No wheel found in dist/")
+            exit(1)
+
+        wheel_path = wheel_files[0]
+        wheel_name = os.path.basename(wheel_path)
+
+        with open(wheel_path, "rb") as f:
+            w.files.upload(
+                file_path=f"{volume_path}/{wheel_name}",
+                contents=f,
+                overwrite=True,
+            )
+        print(f"Uploaded: {volume_path}/{wheel_name}")
+
+        # Also upload as "latest" for stable references
+        with open(wheel_path, "rb") as f:
+            w.files.upload(
+                file_path=f"{volume_path}/dbignite-latest-py3-none-any.whl",
+                contents=f,
+                overwrite=True,
+            )
+        print(f"Uploaded: {volume_path}/dbignite-latest-py3-none-any.whl")
+
+        # List all versions in the volume
+        print(f"\nAll versions in {volume_path}/:")
+        try:
+            for item in w.files.list_directory_contents(volume_path):
+                print(f"  {item.name}  ({item.file_size} bytes)")
+        except Exception:
+            print("  (could not list)")
+
+        PYEOF
+      env:
+        DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+        DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        DATABRICKS_CATALOG: ${{ vars.DATABRICKS_CATALOG || 'hls_workshop' }}
+        VERSION: ${{ needs.resolve-version.outputs.version }}
+
+  # -----------------------------------------------------------------------
+  # 8. Post-release summary
+  # -----------------------------------------------------------------------
+  summary:
+    needs: [resolve-version, build, github-release, publish-pypi, deploy-databricks]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Release summary
+      run: |
+        echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Version | ${{ needs.resolve-version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Tag | ${{ needs.resolve-version.outputs.tag }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Wheel | ${{ needs.build.outputs.wheel_name }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| GitHub Release | ${{ needs.github-release.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| PyPI | ${{ needs.publish-pypi.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Databricks | ${{ needs.deploy-databricks.result }} |" >> $GITHUB_STEP_SUMMARY
