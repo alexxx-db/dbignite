@@ -1,0 +1,132 @@
+# Databricks Asset Bundle configuration for dbignite
+# Deploys the library wheel + workshop notebooks to a Databricks workspace
+#
+# Usage:
+#   databricks bundle validate
+#   databricks bundle deploy -t dev
+#   databricks bundle deploy -t prod
+
+bundle:
+  name: dbignite
+
+variables:
+  catalog:
+    default: hls_workshop
+    description: Target Unity Catalog for workshop tables
+
+artifacts:
+  dbignite_wheel:
+    type: whl
+    path: .
+    build: python -m build --wheel
+
+targets:
+  dev:
+    mode: development
+    workspace:
+      host: ${DATABRICKS_HOST}
+
+    resources:
+      jobs:
+        dbignite_tests:
+          name: "dbignite-tests-${bundle.target}"
+          tasks:
+            - task_key: run_tests
+              notebook_task:
+                notebook_path: tests/run_tests_notebook
+              libraries:
+                - whl: ./dist/*.whl
+              environment_key: test_env
+
+          environments:
+            - environment_key: test_env
+              spec:
+                client: "1"
+                dependencies:
+                  - pytest
+                  - pytest-spark>=0.6.0
+                  - chispa>=0.9.2
+
+        workshop_pipeline:
+          name: "hls-interop-workshop-${bundle.target}"
+          tags:
+            project: dbignite
+            environment: ${bundle.target}
+
+          tasks:
+            - task_key: uc_functions
+              notebook_task:
+                notebook_path: ../hls-interop-workshop/uc_functions
+                base_parameters:
+                  catalog: ${var.catalog}
+              environment_key: workshop_env
+
+            - task_key: fhir_to_omop
+              notebook_task:
+                notebook_path: ../hls-interop-workshop/fhir
+                base_parameters:
+                  catalog: ${var.catalog}
+              depends_on:
+                - task_key: uc_functions
+              environment_key: workshop_env
+
+            - task_key: hl7_parsing
+              notebook_task:
+                notebook_path: ../hls-interop-workshop/hl7
+                base_parameters:
+                  catalog: ${var.catalog}
+              depends_on:
+                - task_key: uc_functions
+              environment_key: workshop_env
+
+          environments:
+            - environment_key: workshop_env
+              spec:
+                client: "1"
+                dependencies:
+                  - python-hl7
+                  - ${artifacts.dbignite_wheel.files[0]}
+
+  prod:
+    mode: production
+    workspace:
+      host: ${DATABRICKS_HOST}
+
+    # In production, the wheel is uploaded to a Volume for stability
+    # rather than referenced as a job-scoped library
+    resources:
+      jobs:
+        workshop_pipeline:
+          name: "hls-interop-workshop-prod"
+          schedule:
+            quartz_cron_expression: "0 0 6 * * ?"  # 6 AM daily
+            timezone_id: America/Chicago
+
+          tags:
+            project: dbignite
+            environment: production
+
+          tasks:
+            - task_key: fhir_to_omop
+              notebook_task:
+                notebook_path: ../hls-interop-workshop/fhir
+                base_parameters:
+                  catalog: ${var.catalog}
+              environment_key: prod_env
+
+            - task_key: hl7_parsing
+              notebook_task:
+                notebook_path: ../hls-interop-workshop/hl7
+                base_parameters:
+                  catalog: ${var.catalog}
+              depends_on:
+                - task_key: fhir_to_omop
+              environment_key: prod_env
+
+          environments:
+            - environment_key: prod_env
+              spec:
+                client: "1"
+                dependencies:
+                  - python-hl7
+                  - /Volumes/${var.catalog}/libraries/wheels/dbignite-latest-py3-none-any.whl
